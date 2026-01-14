@@ -9,4 +9,4 @@ chromadb
 pypdf
 docx2txt
 flashrank
-duckduckgo-search
+duckduckgo-search==6.3.3
