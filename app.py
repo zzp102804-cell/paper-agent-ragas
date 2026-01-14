@@ -8,7 +8,7 @@ from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain_community.retrievers import BM25Retriever
-from langchain_community.tools import DuckDuckGoSearchRun
+# 注：删除了顶层的 DuckDuckGoSearchRun 引用，改为动态按需加载
 from langchain_community.vectorstores import Chroma
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -19,8 +19,10 @@ from langgraph.prebuilt import create_react_agent
 from ragas import evaluate
 from ragas.metrics import faithfulness, answer_relevancy
 from ragas.run_config import RunConfig
+
 # ================= 1. 页面配置 =================
 st.set_page_config(page_title="全能文献 Agent", layout="wide", page_icon="🎓")
+
 # ================= 2. 样式优化 (CSS) =================
 st.markdown("""
 <style>
@@ -51,7 +53,9 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
 st.title("🎓 全能文献 Agent")
+
 # ================= 3. 侧边栏 (控制台) =================
 with st.sidebar:
     st.header("⚙️ 控制台")
@@ -69,6 +73,7 @@ with st.sidebar:
             st.caption(f"- {f.name}")
 
     st.divider()
+
 # ================= 4. 核心工具定义 =================
 def save_uploaded_files(uploaded_files):
     file_paths = []
@@ -81,7 +86,6 @@ def save_uploaded_files(uploaded_files):
 
 @st.cache_resource
 def create_rag_tool(file_paths, api_key):
-    """创建检索工具（包含优化后的参数：Overlap, Top-K, Flashrank）"""
     all_docs = []
     for file_path in file_paths:
         if file_path.endswith(".pdf"):
@@ -132,7 +136,20 @@ def calculator(expression: str) -> str:
     except Exception as e:
         return f"计算出错: {e}"
 
-search_tool = DuckDuckGoSearchRun()
+# 🔥 关键修复：动态联网搜索工具，解决云端环境 ImportError
+@tool
+def safe_web_search(query: str) -> str:
+    """当用户上传的论文中无法找到相关事实时，使用此工具在互联网上搜索最新学术信息。"""
+    try:
+        # 在函数内部导入，避开启动时的环境校验
+        from langchain_community.tools import DuckDuckGoSearchRun
+        search = DuckDuckGoSearchRun()
+        return search.run(query)
+    except ImportError:
+        return "提示：由于服务器环境限制，联网搜索组件加载失败。请优先针对上传的论文内容进行提问。"
+    except Exception as e:
+        return f"联网搜索暂时遇到困难: {str(e)}"
+
 # ================= 5. Agent 初始化 =================
 def initialize_agent(rag_tool, api_key):
     llm = ChatOpenAI(
@@ -141,9 +158,11 @@ def initialize_agent(rag_tool, api_key):
         base_url="https://openrouter.ai/api/v1",
         temperature=0
     )
-    tools = [rag_tool, calculator, search_tool]
+    # 使用安全封装后的搜索工具
+    tools = [rag_tool, calculator, safe_web_search]
     agent = create_react_agent(llm, tools)
     return agent
+
 # ================= 6. Ragas 评测模块 =================
 def run_real_ragas_evaluation(question, answer, contexts, api_key):
     """配置：n=1, temperature=0, timeout=1200s"""
@@ -187,26 +206,23 @@ def run_real_ragas_evaluation(question, answer, contexts, api_key):
     except Exception as e:
         print(f"Ragas 内部报错: {str(e)}")
         return {"error": str(e)}
+
 # ================= 7. 主逻辑 =================
 if uploaded_files and api_key:
     file_paths = save_uploaded_files(uploaded_files)
     rag_tool = create_rag_tool(file_paths, api_key)
 
-    # Agent 初始化
     if "agent_engine" not in st.session_state:
         st.session_state.agent_engine = initialize_agent(rag_tool, api_key)
         st.toast("Multi-Agent 系统已激活！", icon="🚀")
 
-    # 初始化 Session State
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # 显示历史消息
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # 处理用户输入
     if prompt := st.chat_input("试着问我：给我生成这些论文的文献综述..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -220,7 +236,7 @@ if uploaded_files and api_key:
             你是一个由 'Researcher' (研究员) 和 'Writer' (作家) 组成的 Level 4 学术智能体。
 
             1. **Researcher 阶段**: 
-               - 当用户提问时，你必须先调用工具 (search_paper_content, DuckDuckGo) 获取事实。
+               - 当用户提问时，你必须先调用工具 (search_paper_content, safe_web_search) 获取事实。
                - 严禁凭空捏造数据。如果没有查到，就说没查到。
 
             2. **Writer 阶段**:
@@ -244,7 +260,6 @@ if uploaded_files and api_key:
 
                 final_answer = ""
 
-                # 流式输出处理
                 for event in event_stream:
                     if "messages" in event:
                         last_msg = event["messages"][-1]
@@ -252,10 +267,12 @@ if uploaded_files and api_key:
                             for tool_call in last_msg.tool_calls:
                                 status.write(f"🔨 **Researcher**: 调用工具 `{tool_call['name']}`")
                         elif last_msg.type == 'tool':
-                            content = str(last_msg.content)
-                            preview = content[:50] + "..."
-                            status.write(f"📊 **Data Acquired**: {preview}")
-                            retrieved_contexts.append(content)
+                            # 仅统计 RAG 工具获取的背景知识用于评测
+                            if last_msg.name == "search_paper_content":
+                                content = str(last_msg.content)
+                                preview = content[:50] + "..."
+                                status.write(f"📊 **Data Acquired**: {preview}")
+                                retrieved_contexts.append(content)
                         elif last_msg.content:
                             if not (hasattr(last_msg, 'tool_calls') and last_msg.tool_calls):
                                 final_answer = last_msg.content
@@ -265,7 +282,6 @@ if uploaded_files and api_key:
             message_placeholder.markdown(final_answer)
             st.session_state.messages.append({"role": "assistant", "content": final_answer})
 
-            # Ragas 评测
             if retrieved_contexts:
                 with st.expander("AI 生成内容 Ragas 评测"):
                     st.info("正在调用 Ragas 库进行相关指标计算 (Faithfulness & Relevancy)...")
