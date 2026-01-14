@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>Agent Stream Frontend</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f8f8f8;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        textarea, input {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            box-sizing: border-box;
+        }
+        #output {
+            margin-top: 20px;
+            background: #000;
+            color: #0f0;
+            padding: 15px;
+            height: 350px;
+            overflow-y: auto;
+            font-family: Consolas, monospace;
+            white-space: pre-wrap;
+            border-radius: 6px;
+        }
+        button {
+            padding: 12px 20px;
+            font-size: 16px;
+            margin-top: 10px;
+            cursor: pointer;
+            background: #0078ff;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+        }
+        button:hover {
+            background: #005fcc;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>💡 员工绩效智能助手 💡</h2>
+
+    <label>输入你的问题:</label>
+    <textarea id="query" rows="4"
+              placeholder="例如：查询产品部门整体的员工绩效，并根据数据总结分析..."></textarea>
+
+    <button onclick="sendRequest()">开始执行</button>
+
+    <h3>📜 实时输出：</h3>
+    <div id="output"></div>
+</div>
+
+<script>
+    async function sendRequest() {
+        const query = document.getElementById("query").value.trim();
+        const output = document.getElementById("output");
+        output.textContent = "";
+
+        if (!query) {
+            output.textContent = "❗ 请输入 Query";
+            return;
+        }
+
+        const url = "http://127.0.0.1:8000/query";
+
+        try {
+            const response = await fetch("http://127.0.0.1:8000/query", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json"
+				},
+				body: JSON.stringify({ query })
+        })
+
+            // 处理流式响应
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const text = decoder.decode(value);
+                output.textContent += text;
+
+                // 自动滚动到最新
+                output.scrollTop = output.scrollHeight;
+            }
+
+        } catch (err) {
+            output.textContent += "\n❌ 请求失败：请确认后端已启动并允许 CORS\n";
+            console.error(err);
+        }
+    }
+</script>
+</body>
+</html>
